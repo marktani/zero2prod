@@ -143,21 +143,77 @@ TODO: definitely revise this part of the chapter, a lot is happening behind ` #[
 
 -> here we pick `sqlx`
 
-- integration tests with side-effects
+#### integration tests with side-effects
 
-  - simple setup script for database setup
-  - using `sqlx` cli to create postgres database; simple checks if `sqlx` and `psql` are installed; use `psql` to poll until postgres db is up and running
-  - `sqlx` needs `DATABASE_URL` to be set; set it in fish:
+- simple setup script for database setup
+- using `sqlx` cli to create postgres database; simple checks if `sqlx` and `psql` are installed; use `psql` to poll until postgres db is up and running
+- `sqlx` needs `DATABASE_URL` to be set; set it in fish:
 
-  ```sh
-  set DATABASE_URL postgres://postgres:password@127.0.0.1:5432/newsletter
+```sh
+set DATABASE_URL postgres://postgres:password@127.0.0.1:5432/newsletter
+```
+
+- create new (empty) migration: `sqlx migrate add create_subscriptions_table`
+- primary key: use _natural key_ (business meaning) vs. _surrogate key_ (synthethic, id)
+- run `set -x SKIP_DOCKER true; ./script/init_db.sh` in fish shell
+
+- `sqlx` with feature flag `postgres` exposes `PgConnection` [Link](https://docs.rs/sqlx/latest/sqlx/struct.PgConnection.html)
+
+- configuration management with the crate `config`
+  - eg., different constants for different environments (local, dev, staging)
+- define modules in `mod.rs`, expose with
+
+```rust
+mod subscriptions;
+
+pub use subscriptions::*;
+```
+
+#### persisting a new subscriber
+
+- `actix-web` provides _application state_ using the `app_data` method on `App`
+- this can be used to attach stateful things to request handlers; like database connection!
+- we need a database connection in the `subscribe` handler, so adding `connection: PgConnection` to the run method;
+  - compiler error, `HttpServer` expects the returned `App` to be cloneable (i.e., satisfy the `Clone` trait), but `PgConnection` does not!
+  - this is because `HttpServer::new` accepts a closure returning an `App` struct; not an `App` struct directly!
+  - `actix-web` spins up a worker for each core on the system, so each worker creates their own `App` instance
+  - needs to be cloneable to have one copy of `App` for every worker
+  - solution -> wrap `PgConnection` in `web::Data`, a `actix-web` extractor; instead of a raw copy of the connection, it will get a pointer to a connection; the pointer is cloneable! this is called _Atomic Reference Counter pointer_, or an `Arc`
+  - `Arc<T>` is always cloneable
+  - we then use `move` to extract connection from the context
+- back in `subscribe`, we add `_connection`:
+  ```rust
+  pub async fn subscribe(
+      _form: web::Form<FormData>,
+      _connection: web::Data<PgConnection>,
+  ) -> HttpResponse {
+      HttpResponse::Ok().finish()
+  }
   ```
+  - how does it know where `_connection` is coming from?
+  - `actix-web` uses a type-map; it checks which item in the application state has type `PgConnection`; in this case only one!
+    - TODO: what if there are multiple items with same type?
+  - this mechanism is similar to dependency injection in other languages
+  - raw strings in Rust :
+  ```rust
+  r#"
+    This is a raw string
+  "#
+  ```
+  - `sqlx`'s `execute` needs an argument that implements the `Executor` trait. `&PgConnection` does not!
+    - `&mut PgConnection` does!
+    - `sqlx` uses an asynchronous interface, but only allows a single concurrent query using the same database connection!
+    - to enforce this, it needs a mutable reference, immutable reference doesn't work for this
+    - because mutable reference ~~ unique reference; enforced by compiler
+    - but using `&mut PgConnection` would limit us to one concurrent connection - one slow query would slow down all queries
+    - solution -> use a connection pool instead! `&Pool`
+    - the reference itself is still unique, but `sqlx` will receive a new connection from the pool when it's free, and pool contains multiple connections
+- refactoring of main, subscribe and tests to use connection pool instead
+  - in tests, we define new struct `TestApp` for all required info for tests to "Arrange" - in this case, we added connection pool and address fields here for now
+  - now running tests multiple times fails, because we are not cleaning up test data correctly yet -> test isolation!
 
-  - create new (empty) migration: `sqlx migrate add create_subscriptions_table`
-  - primary key: use _natural key_ (business meaning) vs. _surrogate key_ (synthethic, id)
-  - run `set -x SKIP_DOCKER true; ./script/init_db.sh` in fish shell
+#### test isolation
 
-  - `sqlx` with feature flag `postgres` exposes `PgConnection` [Link](https://docs.rs/sqlx/latest/sqlx/struct.PgConnection.html)
-
-  - configuration management with the crate `config`
-    - eg., different constants for different environments (local, dev, staging)
+- two high-level approaches to ensure test isolation for db:
+  - wrap the test in a transaction; roll it back at the end
+  - spin up a brand-new db at the start of each test
