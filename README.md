@@ -31,16 +31,21 @@ Going through the book From Zero to Production with Rust and documenting my lear
 
 ### Chapter 3
 
-- choose web framework -> `actix-web`
+#### choose web framework
 
-  - a big reason is that it runs on `tokio`
-  - what is tokio? -> an asynchronous Rust runtime
-  - useful links:
-    - website [Link](https://actix.rs/)
-    - docs [Link](https://docs.rs/actix-web/4.0.1/actix_web/index.html)
-    - examples [Link](https://github.com/actix/examples)
+`actix-web`
 
-- base health check `/health_check`
+- a big reason is that it runs on `tokio`
+- what is tokio? -> an asynchronous Rust runtime
+- useful links:
+
+  - website [Link](https://actix.rs/)
+  - docs [Link](https://docs.rs/actix-web/4.0.1/actix_web/index.html)
+  - examples [Link](https://github.com/actix/examples)
+
+#### basic health check
+
+`/health_check`
 
 We use
 
@@ -84,14 +89,14 @@ to:
 - this is why we add the macro `#[tokio::main]` - what does it do? -> we can use `cargo expand` to check it out!
 - `cargo install cargo-expand` to expand macros into their actual output
 
-- integration tests
+#### integration tests
 
-  - we choose to add integration test, no unit tests needed (testing only calling the `health_check` function wouldn't ensure that a HTTP `GET` on `/health_check` is succeeding)
-  - three locations for tests in Rust:
-    - next to the code (embedded), behind a `#[cfg(test)]` flag -> gets direct access to private fields etc.
-    - in doc-comments
-    - in a separate `./tests` folder parallel to `./src` -> gets compiled to its own binary
-  - follow Arrange -> Act -> Assert pattern
+- we choose to add integration test, no unit tests needed (testing only calling the `health_check` function wouldn't ensure that a HTTP `GET` on `/health_check` is succeeding)
+- three locations for tests in Rust:
+  - next to the code (embedded), behind a `#[cfg(test)]` flag -> gets direct access to private fields etc.
+  - in doc-comments
+  - in a separate `./tests` folder parallel to `./src` -> gets compiled to its own binary
+- follow Arrange -> Act -> Assert pattern
 
 - preparing `./tests`
 
@@ -104,3 +109,55 @@ to:
 Notes:
 
 - naming a parameter with an underscore, eg. `_req`, will signal to the compiler that it's an unused parameter
+- running `cargo doc --open` generates html docs offline and opens them in the browser
+
+#### subscribing new users to the newsletter
+
+TODO: definitely revise this part of the chapter, a lot is happening behind ` #[derive(Serialize)]` and `#[derive(Deserialize)]`!
+
+- using parametrized tests `Vec<(&str, &str)>`
+- serde
+
+  - Check Understanding Serde by Josh Mcguigan [Link](https://www.joshmcguigan.com/blog/understanding-serde/)
+  - monomorphization
+    - Rust compiler replaces all generics at runtime with the concrete types; then optimizes > no runtime costs for generics
+    - this is known as a zero-cost abstraction: at the same time, easier readable for humans & no performance loss
+    - Rust does not provide runtime reflection; all reflection work needs to be done at compile time
+
+#### storing data: databases
+
+- as of August 2020, three big PostgreSQL packages in Rust:
+  - `tokio-postgres`
+  - `sqlx`
+  - `diesel`
+- pick according to
+  - compile-time safety
+    - `sqlx` and `diesel` provide some kind of compile-time checks for SQL queries:
+      - `diesel`: code generation using a CLI to generate a representation of the data schema in Rust
+      - `sqlx`: usage of macros to connect to a database at compile-time and check if the queries are sound
+  - SQL-first vs. DSL for query building
+    - `diesel`: provides their own query builder
+  - async vs. sync interface
+    - `sqlx` and `tokio-postgres` are async
+    - `diesel` is sync, no async support planned
+
+-> here we pick `sqlx`
+
+- integration tests with side-effects
+
+  - simple setup script for database setup
+  - using `sqlx` cli to create postgres database; simple checks if `sqlx` and `psql` are installed; use `psql` to poll until postgres db is up and running
+  - `sqlx` needs `DATABASE_URL` to be set; set it in fish:
+
+  ```sh
+  set DATABASE_URL postgres://postgres:password@127.0.0.1:5432/newsletter
+  ```
+
+  - create new (empty) migration: `sqlx migrate add create_subscriptions_table`
+  - primary key: use _natural key_ (business meaning) vs. _surrogate key_ (synthethic, id)
+  - run `set -x SKIP_DOCKER true; ./script/init_db.sh` in fish shell
+
+  - `sqlx` with feature flag `postgres` exposes `PgConnection` [Link](https://docs.rs/sqlx/latest/sqlx/struct.PgConnection.html)
+
+  - configuration management with the crate `config`
+    - eg., different constants for different environments (local, dev, staging)
