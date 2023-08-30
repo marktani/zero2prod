@@ -217,3 +217,102 @@ pub use subscriptions::*;
 - two high-level approaches to ensure test isolation for db:
   - wrap the test in a transaction; roll it back at the end
   - spin up a brand-new db at the start of each test
+
+### Chapter 4 - Telemetry
+
+#### Known unknowns vs Unknown unknowns
+
+- known unknowns -> we could tackle most of these; egs:
+  - what happens when malicious input is sent with the `POST` to `/subscriptions`?
+  - what happens if we lose the db connection? does `sqlx::PgPool` automatically recover?
+- unknown unknowns -> this is where telemetry is crucial
+  - experience can sometimes turn unknown unknowns into known unknowns (like DB pool eg above)
+  - some external state that might trigger unknown unknowns:
+    - system is pushed outside of its usual operating conditions (eg huge traffic spike)
+    - multiple components fail at the same time
+    - a change is introduced that moves the system equilibrium (eg. retry policy is changed)
+    - no changes have been made in a long while; no deploys in a long while (eg. memory leaks become apparent)
+  - _they are often difficult to reproduce outside of the live environment!_
+  - so then, how can we prepare for an unknown unknown to occur? -> observability
+
+#### Observability
+
+- preparing logs, visibility into the system etc. _before_ an incident happens
+- we need to predict what information we need during an incident
+- quote from Honeycomb website [Link](https://www.honeycomb.io/what-is-observability)
+  > Observability is about being able to ask arbitrary questions about your environment without — and this is the key part — having to know ahead of time what you wanted to ask.
+- s/arbitrary/sufficiently detailed
+
+In the end, we need:
+
+1. to instrument our app to collect high-quality telemetry data
+1. tools and systems to efficiently slice, dice and manipulate the data to find answers to our questions
+
+#### Logging
+
+- logs are the most common type of telemetry data
+- rust offers the `log` crate ootb
+  - macros: `trace`, `debug`, `info`, `warn` and `error` - built-in log levels
+- common pattern: use function returning `Result<String, String>` or some other `<Ok, Err>` return type, then trace on success and error on error
+- `actix-web` comes with `Logger` middleware
+- when we now run `curl http://127.0.0.1:8000/health_check -v`... nothing gets logged?
+  - -> `log` provides `set_logger` method to choose actual logger that determines logging behavior [Link](https://docs.rs/log/latest/log/fn.set_logger.html)
+  - here we use `env_logger` [Link](https://docs.rs/env_logger/latest/env_logger/), a logger mostly used to print to terminal; log-level can be controlled with `RUST_LOG` env var
+- useful rule of thumb: _closely monitor interactions with other systems over the network_
+- to log errors, we are using ` {:?}`, the `std::fmt::Debug` format, to capture the query error.
+
+  ```rust
+  log::error!("Failed to execute query: {:?}", e);
+  ```
+
+- adding a request id to all logs so we can correlate them
+
+#### Structured Logging - Tracing
+
+- `tracing` crate [Link](https://docs.rs/tracing/latest/tracing/)
+- we create traces that come with a `Span` (start and end time) and do logging automatically, using instrumentation!
+- when instrumenting the database calls like so:
+
+  ```rust
+  let query_span = tracing::info_span!("Saving new subscriber details in the database");
+  // ...
+  match sqlx::query!(/* */)
+    .execute(pool.get_ref())
+    .instrument(query_span)
+    .await
+    {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => {
+            tracing::error!("Failed to execute query: {:?}", e);
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+  ```
+
+  and run `RUST_LOG=trace cargo run`, we see logs like this:
+
+  ```sh
+  [.. INFO  zero2prod] Saving new subscriber details in the database
+  [.. TRACE zero2prod] -> Saving new subscriber details in the database
+  [.. TRACE zero2prod] <- Saving new subscriber details in the database
+  [.. TRACE zero2prod] -> Saving new subscriber details in the database
+  [.. TRACE zero2prod] <- Saving new subscriber details in the database
+  [.. TRACE zero2prod] -> Saving new subscriber details in the database
+  [.. TRACE zero2prod] <- Saving new subscriber details in the database
+  # ...
+  [.. TRACE zero2prod] -- Saving new subscriber details in the database
+  ```
+
+  this is because, once again, `async` in Rust is pull-based! what we see here is the runtime polling the `executor` until it is done.
+
+- our original issue of having request ids go along logs is not solved yet - because we're still using `env_logger`!
+- the `Subscriber` trait in `tracing` is equivalent to `Log` trait in `log` - [Link](https://docs.rs/tracing/latest/tracing/trait.Subscriber.html)
+- find subscribers in `tracing-subscriber`; it also introduces two more key traits:
+  - `Layer`: we can build a processing pipeline for spans data using layers
+  - `Registry`: goes together with the layering approach. it is responsible for storing span metadata, recording relationships between spans, and tracking active and closed spans.
+- in the end, we use three layers:
+  - `tracing_subscriber::filter::EnvFilter` to discard lower log levels
+  - `tracing_bunyan_formatter::JsonStorageLayer` to process spans data and associated metadata in easy-to-consume JSON (port from node's `bunyan`)
+  - `tracing_bunyan_formatter::BunyanFormatterLayer` builds on `JsonStorageLayer` and outputs logs in bunyan-compatible format
+- with all of this, we lost the logs from library code; while traces automatically emit logs (we were able to output traces with `env_logger`), the opposite isn't true; we need an additional logger that explicitely turns logs into traces; `tracing-log` does exactly that
+- `cargo-udeps` to remove unused dependencies
