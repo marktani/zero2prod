@@ -316,3 +316,40 @@ In the end, we need:
   - `tracing_bunyan_formatter::BunyanFormatterLayer` builds on `JsonStorageLayer` and outputs logs in bunyan-compatible format
 - with all of this, we lost the logs from library code; while traces automatically emit logs (we were able to output traces with `env_logger`), the opposite isn't true; we need an additional logger that explicitely turns logs into traces; `tracing-log` does exactly that
 - `cargo-udeps` to remove unused dependencies
+
+#### Logs for integration tests
+
+- `cargo test` swallows log by default, show all logs with `cargo test --no-capture`
+- traces are not swallowed by default -> add a sink to `get_subscriber`
+- higher-ranked trait bound (HRTB):
+
+```rust
+pub fn get_subscriber<Sink>(
+    name: String,
+    env_filter: String,
+    sink: Sink,
+) -> impl Subscriber + Send + Sync
+// this is a higher-ranked trait bound (HRTB)
+// It basically means that Sink implements the `MakeWriter` trait for all choices of the lifetime parameter `'a`
+where
+    Sink: for<'a> MakeWriter<'a> + Send + Sync + 'static,
+{
+  // [...]
+}
+```
+
+- important concepts:
+
+  - ownership [Link](https://doc.rust-lang.org/nomicon/ownership.html)
+  - higher-ranked trait bounds [Link](https://doc.rust-lang.org/nomicon/hrtb.html)
+  - lifetimes [Link](https://doc.rust-lang.org/nomicon/lifetimes.html)
+
+#### Cleaning up instrumentation code
+
+- instead of interlacing code in `subscribe` (for example) with tracing instrumentation, we'd rather _wrap_ the function in a span -> common pattern
+- using `tracing::instrument` procedural macro
+- _pit of success_ - the right thing to do is the easiest thing to do
+- refactored `subscriptions.rs` to have two functions:
+  - `subscribe`: take input from web/form context and prepare arguments; delegate to `insert_subscriber` for actual db logic
+- all fields by default are passed to the `tracing::instrument` macro - high risk to leak private/sensitive data like passwords!
+  - -> using `secrecy` crate to exclude fields
