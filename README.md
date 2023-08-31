@@ -353,3 +353,34 @@ where
   - `subscribe`: take input from web/form context and prepare arguments; delegate to `insert_subscriber` for actual db logic
 - all fields by default are passed to the `tracing::instrument` macro - high risk to leak private/sensitive data like passwords!
   - -> using `secrecy` crate to exclude fields
+
+### Chapter 5 - Deployment
+
+#### Dockerfile
+
+- build Dockerfile using `docker build`:
+  ```sh
+  docker build --tag zero2prod --file Dockerfile .
+  ```
+- run with port forwarding: `docker run -p 8000:8000 zero2prod`
+- hierarchical configuration files using `config` crate
+  - `base.yaml` - common config
+  - `local.yaml` and `production.yaml` for environment-specific config
+  - in `configuration.rs`, read environment variable and choose specific configuration file
+- Dockerfile optimizations (reduce size):
+  - use `.dockerignore` to ignore unneeded files, like `./target` which can get huuuuge! (12GB in my case)
+  - use multi-stage docker build to first get all files needed to compile in `builder` stage, then get all files needed to run in `runtime` stage (binary + config files as of now)
+- final size -> `1.63GB` which apparently rust base is already ~`1.29GB`; from originally total `12.96GB` :)
+- one more optimization: using `rust:1.71.1-slim` docker image -> size `1.06GB`
+- another optimization: strip away rust toolchain stuff (`rustc`, `cargo` etc.) - use `debian:bullseye-slim` image for this -> `96.2MB`!!
+- two more possible optimizations:
+  - compiling against `rust:1.71.1-alpine` - but this needs to be cross-compiled to the `linux-musl` target
+  - stripping symbols from final binary [Link](https://github.com/johnthagen/min-sized-rust#strip-symbols-from-binary)
+- caching in Docker builds; if steps are same, and result after step is same, docker does not re-apply step
+- in Rust, no building for dependencies only from `Cargo.lock` file by default [Link](https://github.com/rust-lang/cargo/issues/2644) -> use `cargo-chef`!
+  - there's a long discussion on this topic in rust community [Link](https://github.com/rust-lang/cargo/issues/2644) [Team Notes](https://hackmd.io/@kobzol/S17NS71bh)
+
+#### Digital Ocean App Platform
+
+- everything is ready to deploy our app on DO! -> using `doctl` CLI [Link](https://docs.digitalocean.com/reference/doctl/how-to/install/)
+- infra is defined in `spec.yaml`
