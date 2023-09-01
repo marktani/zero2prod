@@ -384,3 +384,81 @@ where
 
 - everything is ready to deploy our app on DO! -> using `doctl` CLI [Link](https://docs.digitalocean.com/reference/doctl/how-to/install/)
 - infra is defined in `spec.yaml`
+
+### Chapter 6
+
+- name validation -> sanitizing input, protect against SQL injection etc.
+  - broader topic of threat-modelling [Link](https://martinfowler.com/articles/agile-threat-modelling.html)
+  - some threats for us
+    - denial of service
+    - data theft
+    - phishing
+  - which of them to tackle in validation logic?
+    - layered security approach
+- validation could be done in a function `is_name_valid`
+  - has to be checked _everywhere_ we need to rely on this invariant...
+- better: type-driven development
+
+  - the information that it's valid can be embedded into a type!
+  - parse the input string at the outer layer, turn it into a structured output (type), internally only work with structured fields
+
+- three ways to expose fields of a struct _without_ making it public (this is about ownership topic [Link](https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html))
+
+  - expose it by value, consuming the struct:
+
+  ```rust
+  impl SubscriberName {
+    pub fn inner(self) -> String {
+      // The caller gets the inner string,
+      // but they do not have a `SubscriberName` anymore!
+      // That's because `inner` takes `self` by value,
+      // consuming it according to move semantics
+      self.0
+    }
+  }
+  ```
+
+  - expose a mutable reference:
+
+  ```rust
+  impl SubscriberName {
+    pub fn inner_mut(&mut self) -> &mut str {
+      // The caller gets a mutable reference to the inner string.
+      // This allows them to perform *arbitrary* changes to
+      // value itself, potentially breaking our invariants!
+      &mut self.0
+    }
+  }
+  ```
+
+  - expose a shared reference:
+
+  ```rust
+  impl SubscriberName {
+    pub fn inner_ref(&self) -> &str {
+      // The caller gets a shared reference to the inner string.
+      // This gives the caller **read-only** access,
+      // they have no way to compromise our invariants!
+      &self.0
+    }
+  }
+  ```
+
+  - `inner_mut` is not suitable for our situation because user could mutate the string, which is what we prevent
+  - `inner` would work, but `inner_ref` more clearly communicates our intent - here we go with `inner_ref`
+  - Rust std also has `AsRef` which is designed exactly for this use case!
+    - there are more conversion traits in the std that are all super useful, we're going to cover `From/Into`, `TryFrom/TryInto`
+
+- panics in Rust are to signify _unrecoverable_ errors; the following should be true when a panic occurs in response to any user input: there is a bug in my application, in a library it uses or in the primary application code [Link](https://www.reddit.com/r/rust/comments/9x17hn/comment/e9p5c9t/)
+- here: return Error as Values; `Result<(), sqlx::Error` for example
+
+- `claims` crate, great for handling errors in tests better
+
+- `Result<T, Err>`, `match` and `?` all work very well in combination
+- `validator` crate, for validating all kinds of things, including emails
+- `fake` crate to generate random stuff, including emails; useful for property-based testing
+- There are two mainstream options for property-based testing in the Rust ecosystem: `quickcheck` and `proptest`
+  - here we go with `quickcheck`
+- to see the chosen emails, add `dbg!(&valid_email.0);` statement to the test and run `cargo test domain -- --nocapture`
+
+- here we implement `TryFrom`, `TryInto` on the other type gets implemented automatically!!
