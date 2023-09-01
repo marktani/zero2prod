@@ -7,11 +7,6 @@ use zero2prod::configuration::{get_configuration, DatabaseSettings};
 use zero2prod::startup::run;
 use zero2prod::telemetry::{get_subscriber, init_subscriber};
 
-pub struct TestApp {
-    pub address: String,
-    pub db_pool: PgPool,
-}
-
 // Ensure that the `tracing` stack is only initialised once using `once_cell`
 static TRACING: Lazy<()> = Lazy::new(|| {
     let default_filter_level = "info".to_string();
@@ -29,9 +24,16 @@ static TRACING: Lazy<()> = Lazy::new(|| {
     };
 });
 
+pub struct TestApp {
+    pub address: String,
+    pub db_pool: PgPool,
+}
+
 // spin up an instance of our application
 // and return its address (i.e. http://localhost:XXXX)
 async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
+
     let listener: TcpListener =
         TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
     let port = listener.local_addr().unwrap().port();
@@ -39,7 +41,6 @@ async fn spawn_app() -> TestApp {
 
     let mut configuration = get_configuration().expect("Failed to read configuration.");
     configuration.database.database_name = Uuid::new_v4().to_string();
-
     let connection_pool = configure_database(&configuration.database).await;
 
     let server = run(listener, connection_pool.clone()).expect("Failed to bind address");
@@ -58,7 +59,7 @@ pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
         .expect("Failed to connect to Postgres");
 
     connection
-        .execute(format!(r#"CREATE DATABASE "{}";"#, config.database_name).as_str())
+        .execute(&*format!(r#"CREATE DATABASE "{}";"#, config.database_name))
         .await
         .expect("Failed to create database.");
 
@@ -78,12 +79,12 @@ pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
 #[tokio::test]
 async fn health_check_works() {
     // Arrange
-    let address = spawn_app().await.address;
+    let app = spawn_app().await;
     let client = reqwest::Client::new();
 
     // Act
     let response = client
-        .get(&format!("{}/health_check", &address))
+        .get(&format!("{}/health_check", &app.address))
         .send()
         .await
         .expect("Failed to execute request.");
@@ -98,9 +99,9 @@ async fn subscribe_returns_a_200_for_valid_form_data() {
     // Arrange
     let app = spawn_app().await;
     let client = reqwest::Client::new();
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
 
     // Act
-    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
     let response = client
         .post(&format!("{}/subscriptions", &app.address))
         .header("Content-Type", "application/x-www-form-urlencoded")
